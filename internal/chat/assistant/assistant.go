@@ -29,15 +29,33 @@ func (a *Assistant) Title(ctx context.Context, conv *model.Conversation) (string
 
 	slog.InfoContext(ctx, "Generating title for conversation", "conversation_id", conv.ID)
 
-	msgs := make([]openai.ChatCompletionMessageParamUnion, len(conv.Messages))
+	// Task 1: Fix title generation
+	// Title generation uses a dedicated system prompt plus the user's opening message.
+	// The system message must stay separate from user content: previously the instruction
+	// was written to msgs[0] and then overwritten by the user message, so the model
+	// answered the question instead of producing a title (e.g. a truncated weather reply).
+	msgs := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(`Generate a short, descriptive title for a conversation based on the user's opening message. Return only the title text with no quotes or extra punctuation.
 
-	msgs[0] = openai.AssistantMessage("Generate a concise, descriptive title for the conversation based on the user message. The title should be a single line, no more than 80 characters, and should not include any special characters or emojis.")
-	for i, m := range conv.Messages {
-		msgs[i] = openai.UserMessage(m.Content)
+Examples:
+- "What is the weather like in Barcelona?" → Weather in Barcelona
+- "Help me plan a trip to Japan" → Trip to Japan
+
+The title must be a single line, at most 80 characters, with no special characters or emojis.`),
 	}
 
+	// Append user messages after the system prompt; only the opening user turn is
+	// present when StartConversation calls Title.
+	for _, m := range conv.Messages {
+		if m.Role == model.RoleUser {
+			msgs = append(msgs, openai.UserMessage(m.Content))
+		}
+	}
+
+	// GPT-4.1 follows short system instructions reliably; o1 was slower and treated
+	// the lone user message as a chat question when the system prompt was lost.
 	resp, err := a.cli.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    openai.ChatModelO1,
+		Model:    openai.ChatModelGPT4_1,
 		Messages: msgs,
 	})
 
