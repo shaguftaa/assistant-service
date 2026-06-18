@@ -1,4 +1,4 @@
-package assistant
+package tools
 
 import (
 	"context"
@@ -10,9 +10,59 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/openai/openai-go/v2"
 )
 
 const weatherAPIBase = "https://api.weatherapi.com/v1"
+
+type WeatherTool struct{}
+
+func NewWeatherTool() *WeatherTool {
+	return &WeatherTool{}
+}
+
+func (t *WeatherTool) Name() string {
+	return "get_weather"
+}
+
+func (t *WeatherTool) Definition() openai.ChatCompletionToolUnionParam {
+	return functionTool(t.Name(),
+		"Get live current weather and optional multi-day forecast for a location. Always use this tool for weather questions instead of prior knowledge. Returns temperature, wind speed, conditions, and more.",
+		openai.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"location": map[string]string{
+					"type":        "string",
+					"description": "City name or location to look up, e.g. Barcelona",
+				},
+				"days": map[string]string{
+					"type":        "integer",
+					"description": "Optional forecast length in days (1-14). Omit to return current weather only.",
+				},
+			},
+			"required": []string{"location"},
+		},
+	)
+}
+
+func (t *WeatherTool) Run(ctx context.Context, arguments string) (string, error) {
+	var payload struct {
+		Location string `json:"location"`
+		Days     int    `json:"days"`
+	}
+
+	if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+		return "", fmt.Errorf("failed to parse tool call arguments: %w", err)
+	}
+
+	weather, err := getWeather(ctx, payload.Location, payload.Days)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch weather: %w", err)
+	}
+
+	return weather, nil
+}
 
 type weatherClient struct {
 	apiKey string
@@ -63,9 +113,7 @@ type forecastDay struct {
 	} `json:"day"`
 }
 
-// GetWeather fetches current conditions and, when days > 0, a multi-day forecast
-// from WeatherAPI (https://www.weatherapi.com/).
-func GetWeather(ctx context.Context, location string, days int) (string, error) {
+func getWeather(ctx context.Context, location string, days int) (string, error) {
 	location = strings.TrimSpace(location)
 	if location == "" {
 		return "", fmt.Errorf("location is required")

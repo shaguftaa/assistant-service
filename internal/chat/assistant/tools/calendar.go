@@ -1,4 +1,4 @@
-package assistant
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/arran4/golang-ical"
 )
 
-func LoadCalendar(ctx context.Context, link string) ([]*ics.VEvent, error) {
+func loadCalendar(ctx context.Context, link string) ([]*ics.VEvent, error) {
 	slog.InfoContext(ctx, "Loading calendar", "link", link)
 
 	cal, err := ics.ParseCalendarFromUrl(link, ctx)
