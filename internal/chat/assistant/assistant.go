@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -85,8 +86,13 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 
 	slog.InfoContext(ctx, "Generating reply for conversation", "conversation_id", conv.ID)
 
+	now := time.Now().Format(time.RFC3339)
 	msgs := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("You are a helpful, concise AI assistant. Provide accurate, safe, and clear responses."),
+		openai.SystemMessage(fmt.Sprintf(`You are a helpful, concise AI assistant. Today's date and time is %s.
+
+For any weather-related question, you MUST call get_weather before answering. Never rely on memorized or outdated weather information. Base weather answers only on data returned by get_weather.
+
+For forecast questions, call get_weather with days set to the requested number (1-14). For seasonal or long-range questions (e.g. monsoon outlook), still call get_weather with days=14 for the location, then summarize that data and clearly state that only current conditions and up to a 14-day forecast are available—you cannot provide official seasonal monsoon predictions from memory.`, now)),
 	}
 
 	for _, m := range conv.Messages {
@@ -105,12 +111,17 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 			Tools: []openai.ChatCompletionToolUnionParam{
 				openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 					Name:        "get_weather",
-					Description: openai.String("Get weather at the given location"),
+					Description: openai.String("Get live current weather and optional multi-day forecast for a location. Always use this tool for weather questions instead of prior knowledge. Returns temperature, wind speed, conditions, and more."),
 					Parameters: openai.FunctionParameters{
 						"type": "object",
 						"properties": map[string]any{
 							"location": map[string]string{
-								"type": "string",
+								"type":        "string",
+								"description": "City name or location to look up, e.g. Barcelona",
+							},
+							"days": map[string]string{
+								"type":        "integer",
+								"description": "Optional forecast length in days (1-14). Omit to return current weather only.",
 							},
 						},
 						"required": []string{"location"},
@@ -160,7 +171,23 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 
 				switch call.Function.Name {
 				case "get_weather":
-					msgs = append(msgs, openai.ToolMessage("weather is fine", call.ID))
+					var payload struct {
+						Location string `json:"location"`
+						Days     int    `json:"days"`
+					}
+
+					if err := json.Unmarshal([]byte(call.Function.Arguments), &payload); err != nil {
+						msgs = append(msgs, openai.ToolMessage("failed to parse tool call arguments: "+err.Error(), call.ID))
+						break
+					}
+
+					weather, err := GetWeather(ctx, payload.Location, payload.Days)
+					if err != nil {
+						msgs = append(msgs, openai.ToolMessage("failed to fetch weather: "+err.Error(), call.ID))
+						break
+					}
+
+					msgs = append(msgs, openai.ToolMessage(weather, call.ID))
 				case "get_today_date":
 					msgs = append(msgs, openai.ToolMessage(time.Now().Format(time.RFC3339), call.ID))
 				case "get_holidays":
